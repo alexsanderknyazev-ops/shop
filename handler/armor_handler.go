@@ -89,17 +89,25 @@ func CreateArmorBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println(newArmors)
-	// result := service.CreateArmorBatch(&newArmors)
+	if len(newArmors) == 0 {
+		http.Error(w, "No armor data provided", http.StatusBadRequest)
+		return
+	}
 
-	// if result != nil {
-	// 	http.Error(w, result.Error(), http.StatusInternalServerError)
-	// 	return
-	// }
+	log.Printf("Creating %d armors in batch", len(newArmors))
+	_, err := service.CreateArmorBatch(newArmors)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	// w.Header().Set(defaultContentTypeHeader, defaultApplicationTypeHeader)
-	// w.WriteHeader(http.StatusCreated)
-	// json.NewEncoder(w).Encode(newArmors)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Armors created successfully",
+		"count":   len(newArmors),
+		"armors":  newArmors,
+	})
 
 }
 
