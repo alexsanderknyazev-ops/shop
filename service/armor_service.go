@@ -61,6 +61,10 @@ func CreateArmor(armor *modules.Armor) error {
 	return result.Error
 }
 
+func CreateArmorBatch(armor []*modules.Armor) error {
+	return nil
+}
+
 func DeleteArmorById(id int64) error {
 	db := database.GetDB()
 	if db == nil {
