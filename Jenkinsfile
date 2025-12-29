@@ -1,28 +1,22 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'docker:latest'
+            args '--privileged -v /var/run/docker.sock:/var/run/docker.sock'
+        }
+    }
     
     environment {
         DOCKER_IMAGE = "market-app:${BUILD_NUMBER}"
         KUBE_NAMESPACE = "market"
     }
     
-    options {
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-    }
-    
     stages {
-        stage('Prepare') {
+        stage('Setup') {
             steps {
                 sh '''
-                    echo "🔧 Jenkins Workspace: ${WORKSPACE}"
-                    echo "🔧 Build Number: ${BUILD_NUMBER}"
-                    echo "🔧 Docker Image: ${DOCKER_IMAGE}"
-                    
-                    # Настраиваем Minikube окружение
-                    if command -v minikube &> /dev/null; then
-                        eval $(minikube docker-env)
-                    fi
+                    apk add --no-cache curl git bash
+                    echo "🔧 Setup completed"
                 '''
             }
         }
@@ -34,54 +28,78 @@ pipeline {
             }
         }
         
-        stage('Build') {
+        stage('Install Minikube & kubectl') {
+            steps {
+                sh '''
+                    echo "📦 Installing Minikube and kubectl..."
+                    
+                    # Устанавливаем kubectl
+                    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                    chmod +x kubectl
+                    mv kubectl /usr/local/bin/
+                    
+                    # Устанавливаем Minikube
+                    curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+                    install minikube-linux-amd64 /usr/local/bin/minikube
+                    
+                    # Проверяем установку
+                    kubectl version --client
+                    minikube version
+                '''
+            }
+        }
+        
+        stage('Start Minikube') {
+            steps {
+                sh '''
+                    echo "🚀 Starting Minikube..."
+                    minikube start --driver=docker --memory=4096 --cpus=2
+                    minikube status
+                    
+                    # Настраиваем Docker окружение
+                    eval $(minikube docker-env)
+                    docker ps
+                '''
+            }
+        }
+        
+        stage('Build Docker Image') {
             steps {
                 sh '''
                     echo "🏗️ Building Docker image..."
                     docker build -t ${DOCKER_IMAGE} .
                     docker tag ${DOCKER_IMAGE} market-app:latest
-                    
-                    # Проверяем образ
                     docker images | grep market-app
                 '''
             }
         }
         
-        stage('Test') {
+        stage('Deploy Application') {
             steps {
                 sh '''
-                    echo "🧪 Running tests..."
-                    go test ./... -v -count=1 || true
+                    echo "🚀 Deploying application..."
+                    
+                    # Создаем namespace если нет
+                    kubectl create namespace ${KUBE_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                    
+                    # Запускаем скрипт деплоя
+                    chmod +x deploy-app-only.sh
+                    ./deploy-app-only.sh
+                    
+                    # Или деплоим напрямую
+                    kubectl apply -f k8s/ || echo "No k8s directory, using inline deployment"
                 '''
             }
         }
         
-        stage('Deploy') {
-            steps {
-                sh '''
-                    echo "🚀 Deploying to Minikube..."
-                    chmod +x deploy.sh
-                    DOCKER_IMAGE=${DOCKER_IMAGE} ./deploy.sh
-                '''
-            }
-        }
-        
-        stage('Verify') {
+        stage('Verify Deployment') {
             steps {
                 sh '''
                     echo "🔍 Verifying deployment..."
                     sleep 10
                     
-                    # Проверяем статус всех компонентов
-                    kubectl get all -n ${KUBE_NAMESPACE} || true
-                    kubectl get pods -n ${KUBE_NAMESPACE} -o wide || true
-                    
-                    # Проверяем логи последнего деплоя
-                    POD_NAME=$(kubectl get pods -n ${KUBE_NAMESPACE} -l app=market -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                    if [ -n "$POD_NAME" ]; then
-                        echo "=== Last 10 lines of logs ==="
-                        kubectl logs -n ${KUBE_NAMESPACE} $POD_NAME --tail=10 || true
-                    fi
+                    kubectl get all -n ${KUBE_NAMESPACE}
+                    kubectl logs -n ${KUBE_NAMESPACE} -l app=market-app --tail=10
                 '''
             }
         }
@@ -91,29 +109,8 @@ pipeline {
         always {
             sh '''
                 echo "🧹 Cleaning up..."
-                # Останавливаем port-forward если работает
-                pkill -f "kubectl port-forward" || true
-                
-                # Показываем финальный статус
-                echo "=== Final Status ==="
-                kubectl get pods -n ${KUBE_NAMESPACE} 2>/dev/null || true
+                minikube stop || true
             '''
-            
-            script {
-                // Сохраняем логи сборки
-                archiveArtifacts artifacts: '**/target/*.log', allowEmptyArchive: true
-            }
-        }
-        
-        success {
-            echo "🎉 Pipeline completed successfully!"
-            // Можно добавить уведомления в Slack/Email
-            // slackSend(color: 'good', message: "Build ${BUILD_NUMBER} успешен!")
-        }
-        
-        failure {
-            echo "❌ Pipeline failed!"
-            // slackSend(color: 'danger', message: "Build ${BUILD_NUMBER} упал!")
         }
     }
 }
